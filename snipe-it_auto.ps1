@@ -406,6 +406,8 @@ function GetModelFieldsetColumns {
   param([int] $ModelId)
   $full = Invoke-SnipeApi -Method GET -Endpoint ("models/{0}" -f $ModelId)
 
+  # Some Snipe-IT versions embed the fields directly on the model's fieldset object;
+  # most don't -- the model response usually only carries the fieldset's id/name.
   if ($full -and $full.fieldset -and $full.fieldset.fields -and $full.fieldset.fields.rows) {
     $cols = $full.fieldset.fields.rows | ForEach-Object { $_.db_column_name } | Where-Object { $_ }
     if ($cols) {
@@ -496,15 +498,30 @@ function CreateOrUpdateAsset {
 }
 
 # ==== Main flow ====
-$status = FindOrCreateDeployableStatusLabel -PreferredName $DesiredDeployLabelName -NewNameIfNeeded $FallbackNewLabelName
+$existing = GetAssetBySerial -Serial $Serial
+if (!$existing) {
+    # Asset is not found and should be assigned a deployable status label
+    $status = FindOrCreateDeployableStatusLabel -PreferredName $DesiredDeployLabelName -NewNameIfNeeded $FallbackNewLabelName
 
-$statusInfo = ""
-if ($null -ne $status.status_type -and $status.status_type -ne "") {
-    $statusInfo = "type=$($status.status_type)"
-} elseif ($status.PSObject.Properties.Name -contains 'deployable') {
-    $statusInfo = "deployable=$($status.deployable)"
+    $statusInfo = ""
+    if ($null -ne $status.status_type -and $status.status_type -ne "") {
+        $statusInfo = "type=$($status.status_type)"
+    } elseif ($status.PSObject.Properties.Name -contains 'deployable') {
+        $statusInfo = "deployable=$($status.deployable)"
+    }
+    Write-Host "Deployable status label: $($status.name) (ID $($status.id)) $statusInfo" -ForegroundColor Green
+} else {
+    # Asset already exists and should be read its current status label
+    $status = $existing.status_label
+    $status_info = ""
+
+    # Current status is not null or an empty string
+    if ($null -ne $status.status_type -and $status.status_type -ne "") {
+        $statusInfo = "type=$($status.status_type)"
+    }
+
+    Write-Host "Status label already assigned: $($status.name) (ID $($status.id)) $statusInfo" -ForegroundColor Green
 }
-Write-Host "Deployable status label: $($status.name) (ID $($status.id)) $statusInfo" -ForegroundColor Green
 
 $catName = if ($IsNotebook) { $CategoryNameNotebook } else { $CategoryNameDesktop }
 $cat = FindOrCreateCategory -Name $catName
@@ -523,7 +540,13 @@ if ($UseManufacturerFromWmi -and $WmiManufacturer -and $WmiManufacturer -ne "Unk
 $model = FindOrCreateModel -Name $ModelName -ModelNumber $ModelNumber -CategoryId ([int]$cat.id) -ManufacturerId $manuId
 Write-Host "Model: $($model.name) ($($model.model_number)) (ID $($model.id))" -ForegroundColor Green
 
-Write-Host "The following asset will be created/updated: $Hostname | $Serial | $ModelName | $ModelNumber | $WmiManufacturer" -ForegroundColor Yellow
+$assetSummary = "$Hostname | $Serial | $ModelName | $ModelNumber | $WmiManufacturer"
+if ($existing) {
+  Write-Host "The following asset will be UPDATED (existing ID $($existing.id)): $assetSummary" -ForegroundColor Yellow
+} else {
+  Write-Host "The following asset will be CREATED: $assetSummary" -ForegroundColor Yellow
+  Write-Host "No Snipe-IT asset currently matches this serial. Double-check serial numbers and other fields in Snipe-IT if this device should already exist. If you know this device is truly new, ignore this warning." -ForegroundColor Yellow
+}
 $response = Read-Host -Prompt "Continue? (y/n) ENSURE THE CORRECT MODEL IS SELECTED BEFORE CONTINUING!"
 if ($response -ne "y") {
   Write-Host "Aborted." -ForegroundColor Red
