@@ -52,46 +52,51 @@ function Get-ApiTokenFromEmbedded {
         throw "Encrypted token not configured. Run Encrypt-Token.ps1 and paste the output into `$EncryptedTokenBase64."
     }
     
-    # Prompt for passphrase
-    $Passphrase = Read-Host -Prompt "Enter passphrase to decrypt API token" -AsSecureString # Returns SecureString object
-    $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Passphrase) # Converts SecureString object to a BSTR (Binary String Representation)
-    $PassphraseText = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR) # Converts BSTR to a string
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR) # Clears the BSTR from memory
-    
-    # Decode Base64 to bytes (salt + ciphertext)
+    # Decode Base64 to bytes (salt + ciphertext) once -- wrong passphrase retries do not need to re-decode.
     $EncryptedData = [Convert]::FromBase64String($EncryptedBase64)
     $Salt = $EncryptedData[0..15]
     $Ciphertext = $EncryptedData[16..($EncryptedData.Length - 1)]
-    
-    # Derive key using same PBKDF2 parameters
-    $KeyDerivation = New-Object Security.Cryptography.Rfc2898DeriveBytes(
-        $PassphraseText, $Salt, 100000, [Security.Cryptography.HashAlgorithmName]::SHA256)
-    $Key = $KeyDerivation.GetBytes(32)
-    $IV = $KeyDerivation.GetBytes(16)
-    
-    # Clear passphrase
-    $PassphraseText = $null
-    [GC]::Collect()
-    
-    # Decrypt
-    try {
-        $Aes = [Security.Cryptography.Aes]::Create()
-        $Aes.Key = $Key
-        $Aes.IV = $IV
-        $Aes.Mode = [Security.Cryptography.CipherMode]::CBC
-        $Aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
-        
-        $Decryptor = $Aes.CreateDecryptor()
-        $DecryptedBytes = $Decryptor.TransformFinalBlock($Ciphertext, 0, $Ciphertext.Length)
-        $Aes.Dispose()
-        
-        $Token = [Text.Encoding]::UTF8.GetString($DecryptedBytes).Trim()
-        if ([string]::IsNullOrWhiteSpace($Token)) {
-            throw "Decrypted token is empty."
+
+    while ($true) {
+        $Passphrase = Read-Host -Prompt "Enter passphrase to decrypt API token (press Enter with nothing typed to cancel, or Ctrl+C to exit)" -AsSecureString
+        if ($Passphrase.Length -eq 0) {
+            throw "Passphrase entry cancelled."
         }
-        return $Token
-    } catch {
-        throw "Decryption failed - wrong passphrase or corrupted data."
+
+        $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Passphrase)
+        $PassphraseText = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+        $KeyDerivation = New-Object Security.Cryptography.Rfc2898DeriveBytes(
+            $PassphraseText, $Salt, 100000, [Security.Cryptography.HashAlgorithmName]::SHA256)
+        $Key = $KeyDerivation.GetBytes(32)
+        $IV = $KeyDerivation.GetBytes(16)
+
+        $PassphraseText = $null
+        [GC]::Collect()
+
+        $Aes = $null
+        try {
+            $Aes = [Security.Cryptography.Aes]::Create()
+            $Aes.Key = $Key
+            $Aes.IV = $IV
+            $Aes.Mode = [Security.Cryptography.CipherMode]::CBC
+            $Aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+
+            $Decryptor = $Aes.CreateDecryptor()
+            $DecryptedBytes = $Decryptor.TransformFinalBlock($Ciphertext, 0, $Ciphertext.Length)
+
+            $Token = [Text.Encoding]::UTF8.GetString($DecryptedBytes).Trim()
+            if ([string]::IsNullOrWhiteSpace($Token)) {
+                throw "Decrypted token is empty."
+            }
+            # Leaves function with decrypted token.
+            return $Token
+        } catch {
+            Write-Host "Wrong passphrase. Try again, or press Enter with nothing typed to cancel." -ForegroundColor Red
+        } finally {
+            if ($Aes) { $Aes.Dispose() }
+        }
     }
 }
 
@@ -103,6 +108,10 @@ if ($UseLocalEnv) {
         $ApiToken = Get-ApiTokenFromEmbedded -EncryptedBase64 $EncryptedTokenBase64
         Write-Host "API token decrypted successfully." -ForegroundColor Green
     } catch {
+        if ($_.Exception.Message -eq "Passphrase entry cancelled.") {
+            Write-Host "Cancelled." -ForegroundColor Yellow
+            exit 0
+        }
         Write-Error "Failed to decrypt API token: $($_.Exception.Message)"
         Write-Host "Hint: Run with -UseLocalEnv to use a local .env file for development." -ForegroundColor Yellow
         exit 1
