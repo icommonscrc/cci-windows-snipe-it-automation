@@ -33,6 +33,7 @@ The script will:
 
 ## Notes
 
+- To change the passphrase or rotate the API token, see [updating-encrypted-token.md](updating-encrypted-token.md)
 - **Testing version** — API token loaded from local `.env` file (not for USB deployment)
 - Assets are left **unassigned** (no automatic checkout)
 - Manufacturer names are normalized (e.g., "Hewlett-Packard" → "HP")
